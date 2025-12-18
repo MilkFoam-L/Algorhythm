@@ -1,7 +1,5 @@
 # Algorhythm - AI 音乐制作智能体
 
-<thinking_mode>interleaved</thinking_mode>
-
 基于 LangChain 和 DeepSeek 构建的纯 AI 驱动音乐制作系统。
 
 ## 🎯 项目概述
