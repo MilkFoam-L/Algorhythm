@@ -79,7 +79,9 @@ class HearingTool(BaseTool):
 
             # 设置输出目录
             if output_dir is None:
-                output_dir = tempfile.gettempdir()
+                # 默认输出到项目的 mid 文件夹
+                project_root = Path(__file__).parent.parent.parent
+                output_dir = project_root / "mid"
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
 

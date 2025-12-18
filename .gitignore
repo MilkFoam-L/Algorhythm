@@ -45,6 +45,9 @@ Thumbs.db
 # Audio files (temporary)
 *.wav
 *.mp3
-*.midi
-*.mid
+
+# Generated MIDI files
+mid/*.mid
+
+# Keep samples directory
 !samples/

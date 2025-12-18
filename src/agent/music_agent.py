@@ -4,27 +4,18 @@ Music Agent - Algorhythm 核心智能体
 """
 
 from typing import List, Dict, Any, Optional
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.prompts import PromptTemplate
 from langchain.tools import BaseTool
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm.deepseek_langchain import DeepSeekChatModel
-from ..tools.hearing_tool import HearingTool
 
 
 class MusicAgent:
     """
-    音乐制作 AI 智能体
+    简化的音乐制作 AI 智能体
 
-    这个 Agent 负责协调各种音乐处理工具，实现从音频输入到音乐输出的完整流程。
-
-    当前支持的工具：
-    - Hearing Tool: 音频转 MIDI
-
-    未来扩展：
-    - Theory Tool: 和弦分析
-    - Arrangement Tool: 智能编曲
-    - Rendering Tool: 音频渲染
+    使用直接的 LLM 调用 + 工具执行模式
+    不依赖复杂的 Agent 框架
     """
 
     def __init__(
@@ -38,90 +29,48 @@ class MusicAgent:
 
         Args:
             llm: 语言模型（默认使用 DeepSeek）
-            tools: 工具列表（默认使用所有可用工具）
+            tools: 工具列表
             verbose: 是否显示详细日志
         """
-        # 初始化 LLM
         self.llm = llm or DeepSeekChatModel()
-
-        # 初始化工具
-        if tools is None:
-            self.tools = self._initialize_default_tools()
-        else:
-            self.tools = tools
-
+        self.tools = tools or []
         self.verbose = verbose
 
-        # 创建 Agent
-        self.agent_executor = self._create_agent()
+        # 创建工具映射
+        self.tool_map = {tool.name: tool for tool in self.tools}
 
-    def _initialize_default_tools(self) -> List[BaseTool]:
-        """初始化默认工具集"""
-        return [
-            HearingTool(),
-            # 未来添加更多工具:
-            # TheoryTool(),
-            # ArrangementTool(),
-            # RenderingTool(),
-        ]
+    def add_tool(self, tool: BaseTool) -> None:
+        """添加工具"""
+        self.tools.append(tool)
+        self.tool_map[tool.name] = tool
 
-    def _create_agent(self) -> AgentExecutor:
-        """
-        创建 LangChain Agent
+    def get_available_tools(self) -> List[str]:
+        """获取可用工具列表"""
+        return [tool.name for tool in self.tools]
 
-        使用 ReAct (Reasoning + Acting) 模式
-        """
-        # 定义 Agent 提示词模板
-        template = """You are Algorhythm, an AI music production assistant.
+    def _format_tools_description(self) -> str:
+        """格式化工具描述"""
+        if not self.tools:
+            return "当前没有可用的工具。"
 
-You have access to the following tools:
+        descriptions = []
+        for tool in self.tools:
+            # 获取工具的参数 schema
+            params_info = ""
+            if hasattr(tool, 'args_schema') and tool.args_schema:
+                schema = tool.args_schema
+                if hasattr(schema, 'model_fields'):
+                    fields = schema.model_fields
+                    param_list = []
+                    for field_name, field_info in fields.items():
+                        field_desc = field_info.description if hasattr(field_info, 'description') else ""
+                        param_list.append(f'"{field_name}": {field_desc}')
+                    if param_list:
+                        params_info = f"\n  参数: {{{', '.join(param_list)}}}"
 
-{tools}
+            descriptions.append(f"- {tool.name}: {tool.description}{params_info}")
 
-Tool Names: {tool_names}
-
-When a user asks you to process audio or create music, follow these steps:
-1. Understand what the user wants to do
-2. Choose the appropriate tool(s)
-3. Execute the tool with correct parameters
-4. Explain the results to the user
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Question: {input}
-Thought: {agent_scratchpad}"""
-
-        prompt = PromptTemplate.from_template(template)
-
-        # 创建 ReAct Agent
-        agent = create_react_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=prompt
-        )
-
-        # 创建 Agent Executor
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=self.verbose,
-            handle_parsing_errors=True,
-            max_iterations=5,
-            early_stopping_method="generate"
-        )
-
-        return agent_executor
+        return "\n".join(descriptions)
 
     def process(self, user_input: str) -> Dict[str, Any]:
         """
@@ -134,17 +83,111 @@ Thought: {agent_scratchpad}"""
             处理结果字典
         """
         try:
-            result = self.agent_executor.invoke({"input": user_input})
+            if self.verbose:
+                print(f"\n🎵 用户输入: {user_input}")
+                print(f"🔧 可用工具: {', '.join(self.get_available_tools())}")
+
+            # 构建系统提示词
+            system_prompt = f"""你是 Algorhythm，一个专业的 AI 音乐制作助手。
+
+你可以使用以下工具来帮助用户：
+
+{self._format_tools_description()}
+
+当用户请求处理音频或创建音乐时，请：
+1. 理解用户的需求
+2. 选择合适的工具
+3. 使用工具完成任务
+4. 向用户解释结果
+
+如果用户的请求需要使用工具，请按以下格式回复：
+TOOL: 工具名称
+INPUT: 工具输入参数（JSON 格式）
+
+如果不需要使用工具，直接回复用户即可。"""
+
+            # 调用 LLM
+            response = self.llm.client.chat_once(
+                message=user_input,
+                system_prompt=system_prompt
+            )
+
+            if self.verbose:
+                print(f"\n🤖 AI 响应: {response[:200]}...")
+
+            # 检查是否需要调用工具
+            if "TOOL:" in response and "INPUT:" in response:
+                # 解析工具调用
+                tool_result = self._execute_tool_from_response(response)
+
+                if tool_result:
+                    # 将工具结果反馈给 LLM
+                    follow_up = self.llm.client.chat_once(
+                        message=f"工具执行结果：{tool_result}\n\n请向用户解释这个结果。",
+                        system_prompt=system_prompt
+                    )
+
+                    return {
+                        "success": True,
+                        "output": follow_up,
+                        "tool_used": True,
+                        "tool_result": tool_result
+                    }
+
             return {
                 "success": True,
-                "output": result.get("output", ""),
-                "intermediate_steps": result.get("intermediate_steps", [])
+                "output": response,
+                "tool_used": False
             }
+
         except Exception as e:
+            if self.verbose:
+                print(f"\n❌ 错误: {e}")
+
             return {
                 "success": False,
                 "error": str(e)
             }
+
+    def _execute_tool_from_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """从 LLM 响应中解析并执行工具"""
+        try:
+            # 简单的解析逻辑
+            lines = response.split('\n')
+            tool_name = None
+            tool_input = None
+
+            for line in lines:
+                if line.startswith("TOOL:"):
+                    tool_name = line.replace("TOOL:", "").strip()
+                elif line.startswith("INPUT:"):
+                    tool_input = line.replace("INPUT:", "").strip()
+
+            if tool_name and tool_name in self.tool_map:
+                tool = self.tool_map[tool_name]
+
+                if self.verbose:
+                    print(f"\n🔧 执行工具: {tool_name}")
+                    print(f"📥 输入: {tool_input}")
+
+                # 执行工具
+                import json
+                try:
+                    input_dict = json.loads(tool_input)
+                    result = tool._run(**input_dict)
+                except json.JSONDecodeError:
+                    # 如果不是 JSON，尝试直接传递
+                    result = tool._run(tool_input)
+
+                if self.verbose:
+                    print(f"📤 输出: {result}")
+
+                return result
+
+        except Exception as e:
+            if self.verbose:
+                print(f"❌ 工具执行失败: {e}")
+            return None
 
     def process_audio_file(self, audio_path: str, task: str = "convert to MIDI") -> Dict[str, Any]:
         """
@@ -157,45 +200,11 @@ Thought: {agent_scratchpad}"""
         Returns:
             处理结果
         """
-        user_input = f"Please {task} for the audio file: {audio_path}"
+        user_input = f"请{task}，音频文件路径是: {audio_path}"
         return self.process(user_input)
 
-    def get_available_tools(self) -> List[str]:
-        """获取可用工具列表"""
-        return [tool.name for tool in self.tools]
 
-    def add_tool(self, tool: BaseTool) -> None:
-        """
-        添加新工具
-
-        Args:
-            tool: LangChain BaseTool 实例
-        """
-        self.tools.append(tool)
-        # 重新创建 Agent
-        self.agent_executor = self._create_agent()
-
-    def remove_tool(self, tool_name: str) -> bool:
-        """
-        移除工具
-
-        Args:
-            tool_name: 工具名称
-
-        Returns:
-            是否成功移除
-        """
-        original_length = len(self.tools)
-        self.tools = [t for t in self.tools if t.name != tool_name]
-
-        if len(self.tools) < original_length:
-            # 重新创建 Agent
-            self.agent_executor = self._create_agent()
-            return True
-        return False
-
-
-# 便捷函数：快速创建 Agent
+# 便捷函数
 def create_music_agent(verbose: bool = True) -> MusicAgent:
     """
     快速创建音乐 Agent
